@@ -6,8 +6,6 @@ from util import string_to_uuid
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP, AES
 
-from Crypto.Util.Padding import unpad
-
 class Client:
     def __init__(self, connection, address, database):
         self.connection = connection
@@ -86,7 +84,6 @@ class Client:
         file_name = file_name.decode().strip('\x00')
         file_path = os.path.join(self.name, file_name)
         encrypted_data = payload[267:267 + 1024]
-        iv = payload[267 + 1024:267 + 1024 + 16]
 
         if not os.path.exists(self.name):
             os.makedirs(self.name)
@@ -95,7 +92,7 @@ class Client:
         if self.received_packets == 0:
             print(f"Receiving file {file_name} from {self.address}, expecting {total_packets} packets.")
 
-        decrypted_data = self.decrypt_data(encrypted_data, iv).rstrip(b'\x00')
+        decrypted_data = self.decrypt_data(encrypted_data).rstrip(b'\x00')
 
         if os.path.exists(file_path):
             os.remove(file_path)
@@ -109,7 +106,7 @@ class Client:
         if self.received_packets == total_packets:
             print(f"Received all packets for {file_name} from {self.address}.")
 
-    def decrypt_data(self, data, iv):
+    def decrypt_data(self, data):
         iv = b"\x00" * 16
         cipher = AES.new(self.aes_key, AES.MODE_CBC, iv)
         return cipher.decrypt(data)
