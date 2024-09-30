@@ -7,10 +7,11 @@ Server for the Encrypted File Transfer. The server is responsible for:
 * Verifying file integrity using CRC checksums
 * Stores the decrypted file in the memory
 
-Uses PyCryptodome for encryption operations
 
-Stores user data and file information in a database
+Uses PyCryptodome for encryption operations.
 
-Maintains a local directory for received files
+Stores user data and file information in a database.
+
+Maintains a local directory for received files.
 
 The server reads its port number from a port.info file and listens for client requests indefinitely.
