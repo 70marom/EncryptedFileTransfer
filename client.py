@@ -1,10 +1,12 @@
 import os.path
 import struct
 from Crypto.Random import get_random_bytes
-from protocol_handler import failed_register, success_register, success_login, failed_login, send_aes_key
+from protocol_handler import failed_register, success_register, success_login, failed_login, send_aes_key, \
+    general_error, send_file_crc
 from util import string_to_uuid
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP, AES
+from cksum import file_crc
 
 class Client:
     def __init__(self, connection, address, database):
@@ -17,11 +19,15 @@ class Client:
         self.received_packets = 0
 
     def get_requests(self):
-        header = self.connection.recv(23)
-        if not header:
-            return None
-        self.client_id, version, code, payload_size = struct.unpack('<16sBHI', header)
-        payload = self.connection.recv(payload_size)
+        try:
+            header = self.connection.recv(23)
+            if not header:
+                return
+            self.client_id, version, code, payload_size = struct.unpack('<16sBHI', header)
+            payload = self.connection.recv(payload_size)
+        except (struct.error, ConnectionError):
+            print(f"Error: failed to receive data from {self.address}.")
+            return
         match code:
             case 825:
                 self.handle_register(payload)
@@ -33,7 +39,7 @@ class Client:
                 self.handle_save_file(payload)
             case default:
                 print(f"Received unknown request code {code} from {self.address}")
-                failed_register().send(self.connection)
+                general_error().send(self.connection)
 
     def handle_register(self, payload):
         if self.database.client_exists(payload):
@@ -80,33 +86,47 @@ class Client:
 
 
     def handle_save_file(self, payload):
-        content_size, decrypted_size, packet_number, total_packets, file_name = struct.unpack("<IIHH255s", payload[:267])
-        file_name = file_name.decode().strip('\x00')
-        file_path = os.path.join(self.name, file_name)
-        encrypted_data = payload[267:267 + 1024]
+        try:
+            content_size, decrypted_size, packet_number, total_packets, file_name = struct.unpack("<IIHH255s", payload[:267])
+            file_name = file_name.decode().strip('\x00')
+            file_path = os.path.join(self.name, file_name)
+            encrypted_data = payload[267:267 + 1024]
 
-        if not os.path.exists(self.name):
-            os.makedirs(self.name)
-            print(f"Created a directory for {self.name}.")
+            if not os.path.exists(self.name):
+                os.makedirs(self.name)
+                print(f"Created a directory for {self.name}.")
 
-        if self.received_packets == 0:
-            print(f"Receiving file {file_name} from {self.address}, expecting {total_packets} packets.")
+            if self.received_packets == 0:
+                print(f"Receiving file {file_name} from {self.address}, expecting {total_packets} packets.")
 
-        decrypted_data = self.decrypt_data(encrypted_data).rstrip(b'\x00')
+            decrypted_data = self.decrypt_data(encrypted_data).rstrip(b'\x00')
 
-        if os.path.exists(file_path):
-            os.remove(file_path)
+            if self.received_packets == 0 and os.path.exists(file_path):
+                os.remove(file_path)
 
-        with open(file_path, 'ab') as file:
-            file.write(decrypted_data)
-            print(f"Received packet {packet_number} of {file_name} from {self.address}.")
+            with open(file_path, 'ab') as file:
+                file.write(decrypted_data)
+                print(f"Received packet {packet_number} of {file_name} from {self.address}.")
 
-        self.received_packets += 1
+            self.received_packets += 1
 
-        if self.received_packets == total_packets:
-            print(f"Received all packets for {file_name} from {self.address}.")
+            if self.received_packets == total_packets:
+                print(f"Received all packets for {file_name} from {self.address}.")
+                self.handle_file_crc(file_path, file_name, content_size)
+            else:
+                self.get_requests()
+        except (IOError, OSError, struct.error, FileNotFoundError):
+            print(f"Error: failed to save file from {self.address}.")
+            general_error().send(self.connection)
 
     def decrypt_data(self, data):
         iv = b"\x00" * 16
         cipher = AES.new(self.aes_key, AES.MODE_CBC, iv)
         return cipher.decrypt(data)
+
+    def handle_file_crc(self, file_path, file_name, content_size):
+        crc = file_crc(file_path)
+        if crc is None:
+            general_error().send(self.connection)
+            return
+        send_file_crc(self.client_id, content_size, file_name, crc).send(self.connection)

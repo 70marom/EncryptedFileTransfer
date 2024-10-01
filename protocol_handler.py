@@ -20,3 +20,7 @@ def general_error():
 def send_aes_key(client_id, aes_key):
     payload = client_id + aes_key
     return Response(1602, payload)
+
+def send_file_crc(client_id, content_size, file_name, crc):
+    payload = client_id + content_size.to_bytes(4, 'little') + file_name.encode() + crc.to_bytes(4, 'little')
+    return Response(1603, payload)
