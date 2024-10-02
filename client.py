@@ -2,7 +2,7 @@ import os.path
 import struct
 from Crypto.Random import get_random_bytes
 from protocol_handler import failed_register, success_register, success_login, failed_login, send_aes_key, \
-    general_error, send_file_crc
+    general_error, send_file_crc, send_final_confirmation
 from util import string_to_uuid
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP, AES
@@ -37,6 +37,13 @@ class Client:
                 self.handle_login(payload)
             case 828:
                 self.handle_save_file(payload)
+            case 900:
+                self.handle_transfer_success(payload)
+            case 901:
+                print(f"Error: {self.address} got a different CRC for {payload.decode().strip('\x00')}. Receiving file again.")
+                self.get_requests()
+            case 902:
+                self.handle_transfer_failed(payload)
             case default:
                 print(f"Received unknown request code {code} from {self.address}")
                 general_error().send(self.connection)
@@ -99,19 +106,23 @@ class Client:
             if self.received_packets == 0:
                 print(f"Receiving file {file_name} from {self.address}, expecting {total_packets} packets.")
 
-            decrypted_data = self.decrypt_data(encrypted_data).rstrip(b'\x00')
+            decrypted_data = self.decrypt_data(encrypted_data)
+
+            if packet_number == total_packets:
+                decrypted_data = decrypted_data.rstrip(b"\x00")
 
             if self.received_packets == 0 and os.path.exists(file_path):
                 os.remove(file_path)
 
             with open(file_path, 'ab') as file:
                 file.write(decrypted_data)
-                print(f"Received packet {packet_number} of {file_name} from {self.address}.")
+                print(f"Received packet {packet_number}/{total_packets} of {file_name} from {self.address}.")
 
             self.received_packets += 1
 
             if self.received_packets == total_packets:
                 print(f"Received all packets for {file_name} from {self.address}.")
+                self.received_packets = 0
                 self.handle_file_crc(file_path, file_name, content_size)
             else:
                 self.get_requests()
@@ -130,3 +141,21 @@ class Client:
             general_error().send(self.connection)
             return
         send_file_crc(self.client_id, content_size, file_name, crc).send(self.connection)
+        print(f"Sent CRC for {file_name} to {self.address}.")
+        self.get_requests()
+
+    def handle_transfer_success(self, payload):
+        print(f"{self.address} successfully received {payload.decode().strip('\x00')} with matching CRC.")
+        send_final_confirmation(self.client_id).send(self.connection)
+        print(f"Sent final confirmation to {self.address} in order to close connection.")
+
+    def handle_transfer_failed(self, payload):
+        file_name = payload.decode().strip('\x00')
+        print(f"{self.address} failed to receive {file_name} with matching CRC after 4 tries.")
+        file_path = os.path.join(self.name, file_name)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        if not os.listdir(self.name):
+            os.rmdir(self.name)
+        send_final_confirmation(self.client_id).send(self.connection)
+        print(f"Sent final confirmation to {self.address} in order to close connection.")
