@@ -14,51 +14,56 @@ class Client:
         self.address = address
         self.database = database
         self.client_id = None
+        self.running = True
         self.aes_key = None
         self.name = None
         self.received_packets = 0
 
     def get_requests(self):
-        try:
-            header = self.connection.recv(23)
-            if not header:
+        while self.running:
+            try:
+                header = self.connection.recv(23)
+                if not header:
+                    self.running = False
+                    return
+                self.client_id, version, code, payload_size = struct.unpack('<16sBHI', header)
+                payload = self.connection.recv(payload_size)
+            except (struct.error, ConnectionError):
+                print(f"Error: failed to receive data from {self.address}.")
+                self.running = False
                 return
-            self.client_id, version, code, payload_size = struct.unpack('<16sBHI', header)
-            payload = self.connection.recv(payload_size)
-        except (struct.error, ConnectionError):
-            print(f"Error: failed to receive data from {self.address}.")
-            return
-        match code:
-            case 825:
-                self.handle_register(payload)
-            case 826:
-                self.handle_public_key(payload)
-            case 827:
-                self.handle_login(payload)
-            case 828:
-                self.handle_save_file(payload)
-            case 900:
-                self.handle_transfer_success(payload)
-            case 901:
-                print(f"Error: {self.address} got a different CRC for {payload.decode().strip('\x00')}. Receiving file again.")
-                self.get_requests()
-            case 902:
-                self.handle_transfer_failed(payload)
-            case default:
-                print(f"Received unknown request code {code} from {self.address}")
-                general_error().send(self.connection)
+            match code:
+                case 825:
+                    self.handle_register(payload)
+                case 826:
+                    self.handle_public_key(payload)
+                case 827:
+                    self.handle_login(payload)
+                case 828:
+                    self.handle_save_file(payload)
+                case 900:
+                    self.handle_transfer_success(payload)
+                case 901:
+                    print(f"Error: {self.address} got a different CRC for {payload.decode().strip('\x00')}. Receiving file again.")
+                    continue
+                case 902:
+                    self.handle_transfer_failed(payload)
+                case default:
+                    print(f"Received unknown request code {code} from {self.address}")
+                    general_error().send(self.connection)
+                    self.running = False
 
     def handle_register(self, payload):
         if self.database.client_exists(payload):
             print(f"{self.address} tried to register with the name {payload.decode()[:-1]}, but it's already taken.")
             failed_register().send(self.connection)
+            self.running = False
         else:
             self.client_id = bytes.fromhex(string_to_uuid(payload.decode()))
             self.database.register_client(self.client_id, payload.decode())
             print(f"{self.address} registered with the name {payload.decode()[:-1]}")
             self.name = payload.decode()[:-1]
             success_register(self.client_id).send(self.connection)
-            self.get_requests()
 
     def handle_login(self, payload):
         if self.database.client_exists_by_id(self.client_id, payload.decode()):
@@ -66,12 +71,13 @@ class Client:
             self.name = payload.decode()[:-1]
             self.generate_aes_key()
             success_login(self.client_id, self.database.get_aes_key(self.client_id)).send(self.connection)
+            self.database.update_last_seen(self.client_id)
             print(f"Sent AES key to {self.address}.")
-            self.get_requests()
         else:
             print(f"{self.address} tried to log in with the name {payload.decode()[:-1]}, but it's not registered " +
                   "or its UUID is not valid.")
             failed_login(self.client_id).send(self.connection)
+            self.running = False
 
     def handle_public_key(self, payload):
         public_key = payload[255:]
@@ -124,11 +130,11 @@ class Client:
                 print(f"Received all packets for {file_name} from {self.address}.")
                 self.received_packets = 0
                 self.handle_file_crc(file_path, file_name, content_size)
-            else:
-                self.get_requests()
+
         except (IOError, OSError, struct.error, FileNotFoundError):
             print(f"Error: failed to save file from {self.address}.")
             general_error().send(self.connection)
+            self.running = False
 
     def decrypt_data(self, data):
         iv = b"\x00" * 16
@@ -139,23 +145,28 @@ class Client:
         crc = file_crc(file_path)
         if crc is None:
             general_error().send(self.connection)
+            self.running = False
             return
         send_file_crc(self.client_id, content_size, file_name, crc).send(self.connection)
         print(f"Sent CRC for {file_name} to {self.address}.")
-        self.get_requests()
 
     def handle_transfer_success(self, payload):
-        print(f"{self.address} successfully received {payload.decode().strip('\x00')} with matching CRC.")
+        file_name = payload.decode().strip('\x00')
+        print(f"{self.address} successfully received {file_name} with matching CRC.")
         send_final_confirmation(self.client_id).send(self.connection)
+        self.database.save_file(self.client_id, file_name, os.path.join(self.name, file_name))
         print(f"Sent final confirmation to {self.address} in order to close connection.")
+        self.running = False
 
     def handle_transfer_failed(self, payload):
         file_name = payload.decode().strip('\x00')
-        print(f"{self.address} failed to receive {file_name} with matching CRC after 4 tries.")
+        print(f"CRC for {file_name} from {self.address} did not match after 4 tries. Transfer failed.")
         file_path = os.path.join(self.name, file_name)
         if os.path.exists(file_path):
             os.remove(file_path)
         if not os.listdir(self.name):
             os.rmdir(self.name)
         send_final_confirmation(self.client_id).send(self.connection)
+        self.database.save_file(self.client_id, file_name, file_path, False)
         print(f"Sent final confirmation to {self.address} in order to close connection.")
+        self.running = False

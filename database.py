@@ -22,8 +22,8 @@ class Database:
     def create_files_table(self):
         with self.lock:
             self.cursor.execute('CREATE TABLE IF NOT EXISTS ' +
-                                'files (ID CHAR(16) PRIMARY KEY, ' +
-                                'FileName VARCHAR(255), ' +
+                                'files (ID BINARY(16), ' +
+                                'FileName VARCHAR(255) PRIMARY KEY, ' +
                                 'PathName VARCHAR(255), ' +
                                 'Verified BOOLEAN)')
             self.connection.commit()
@@ -70,4 +70,15 @@ class Database:
     def add_aes_key(self, client_id, aes_key):
         with self.lock:
             self.cursor.execute('UPDATE clients SET AESKey = ? WHERE ID = ?', (aes_key, client_id))
+            self.connection.commit()
+
+    def update_last_seen(self, client_id):
+        with self.lock:
+            self.cursor.execute('UPDATE clients SET LastSeen = CURRENT_TIMESTAMP WHERE ID = ?', (client_id,))
+            self.connection.commit()
+
+    def save_file(self, client_id, file_name, file_path, is_verified=True):
+        with self.lock:
+            self.cursor.execute('INSERT OR REPLACE INTO files (ID, FileName, PathName, Verified) VALUES (?, ?, ?, ?)',
+                                (client_id, file_name, file_path, is_verified))
             self.connection.commit()
