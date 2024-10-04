@@ -77,7 +77,6 @@ class Client:
             print(f"{self.address} tried to log in with the name {payload.decode()[:-1]}, but it's not registered " +
                   "or its UUID is not valid.")
             failed_login(self.client_id).send(self.connection)
-            self.running = False
 
     def handle_public_key(self, payload):
         public_key = payload[255:]
