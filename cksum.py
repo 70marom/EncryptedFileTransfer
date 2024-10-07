@@ -63,7 +63,7 @@ UNSIGNED = lambda n: n & 0xffffffff
 
 def memcrc(b):
     n = len(b)
-    i = c = s = 0
+    s = 0
     for ch in b:
         tabidx = (s>>24)^ch
         s = UNSIGNED((s << 8)) ^ crctab[tabidx]
