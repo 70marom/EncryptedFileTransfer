@@ -20,5 +20,8 @@ class Response:
         return header + str(self.payload).encode()
 
     def send(self, connection):
-        # pack the response and send it to the client
-        connection.sendall(self.pack())
+        try:
+            # pack the response and send it to the client
+            connection.sendall(self.pack())
+        except connection.error:
+            print("Error: failed to send response to client.")
