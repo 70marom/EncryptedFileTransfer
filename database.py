@@ -3,7 +3,7 @@ import threading
 
 class Database:
     def __init__(self):
-        self.connection = sqlite3.connect('defensive.db', check_same_thread=False)
+        self.connection = sqlite3.connect('database.db', check_same_thread=False)
         self.cursor = self.connection.cursor()
         self.lock = threading.Lock()
         self.create_clients_table()
